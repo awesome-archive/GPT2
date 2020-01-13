@@ -29,16 +29,18 @@ def sample_sequence(*, params, length, start_token=None, batch_size=None, contex
         assert context is None, 'Specify exactly one of start_token and context!'
         context = tf.fill([batch_size, 1], start_token)
 
+    length = length - params["text_len"]
+
     def step(params, tokens, past=None):
         if params["precision"] == 'bfloat16':
             with tf.contrib.tpu.bfloat16_scope():
                 lm_output = gpt2.model(params=params, X=tokens, past=past, reuse=tf.AUTO_REUSE)
 
             lm_output["logits"] = tf.cast(lm_output["logits"], tf.float32)
-            
+
         else:
             lm_output = lm_output = gpt2.model(params=params, X=tokens, past=past, reuse=tf.AUTO_REUSE)
-        
+
 
         logits = lm_output['logits'][:, :, :params["n_vocab"]]
         presents = lm_output['present']
@@ -65,7 +67,7 @@ def sample_sequence(*, params, length, start_token=None, batch_size=None, contex
 
         def cond(*args):
             return True
-        
+
         _, _, tokens = tf.while_loop(
             cond=cond, body=body,
             maximum_iterations=length,

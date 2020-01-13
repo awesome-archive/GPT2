@@ -1,7 +1,7 @@
 # GPT2
-**This is not the official GPT2 implementation!**
+**Disclaimer: This is not the official GPT2 implementation! I've done my best to follow the specifications of the original GPT2 model as closely as possible, but be warned that I have not been able to replicate the full performance of the original model using this code. I don't know why this is, I haven't been able to track down any bug that could be causing this.**
 
-An implementation of training for [GPT2](https://openai.com/blog/better-language-models/) that supports both GPUs and TPUs. The dataset scripts are a bit hack-y and will probably need to be adapted to your needs. 
+An implementation of training for [GPT2](https://openai.com/blog/better-language-models/) that supports both GPUs and TPUs. The dataset scripts are a bit hacky and will probably need to be adapted to your needs. 
 ## Requirements
 For GPUs:
 
@@ -20,7 +20,7 @@ For generating the dataset (in addition to Tensorflow):
 `pip3 install ftfy tqdm newspaper3k`
 
 ## Downloading Pretrained Models
-If you want to use my models, I currently have "117M" and "PrettyBig" to offer. 117M was trained on a single v2 TPU for a week (probably less than the original OpenAI model), PrettyBig is slightly bigger than 345M and was trained on a v2-256 pod for a week. I am planning on also releasing my version of 1.5B, which was trained on a v3-512 pod for around a week. Please see my blogposts [here](https://medium.com/@NPCollapse/gpt2-counting-consciousness-and-the-curious-hacker-323c6639a3a8) and [here](https://medium.com/@NPCollapse/replicating-gpt2-1-5b-86454a7f26af) for more info.
+If you want to use my models, I currently have "117M", "PrettyBig" and "1.5B" to offer. 117M was trained on a single v2 TPU for a week (probably less than the original OpenAI model), PrettyBig is slightly bigger than 345M and was trained on a v2-256 pod for a week. ~~I was originally also planning to release my version of the 1.5B model, but have decided against it. You can read about my reasoning [here](https://medium.com/@NPCollapse/the-hacker-learns-to-trust-62f3c1490f51).~~ Since OpenAI has released their model, I have now also released my (inferior) 1.5B model, which was trained on a v3-512 pod for a week.
 
 `python3 download_model.py PrettyBig`
 
@@ -31,7 +31,7 @@ If you only want the encoder, use:
 `python3 download_model.py encoder`
 
 ## Generating Text
-To predict you can either pass the prompt directly in the command line, or have it read from a file. (This is useful for prompts that include new lines) Text is output to the console and the file specified in the "predict_path" parameter. You need a model checkpoint and a copy of the BPE encoder at an accessible location for this to work. (Change the "model_dir" and "encoder_path" parameters in the .json)
+To predict you can either pass the prompt directly in the command line, or have it read from a file. (This is useful for prompts that include newlines) Text is output to the console and the file specified in the "predict_path" parameter. You need a model checkpoint and a copy of the BPE encoder at an accessible location for this to work. (Change the "model_dir" and "encoder_path" parameters in the .json)
 
 From command line:
 
@@ -58,13 +58,63 @@ This assumes you have a version of the openwebtext corpus stored in an accessibl
 
 
 ## Generating the Dataset
-GPT2 is trained on the webtext corpus, which is basically all websites linked to from reddit with at least 3 Karma. Since the database is huge and contains a lot of copyrighted material, I can't provide a download here. Instead I'll describe how I got it. Be aware it cost me around ~500€ in cloud compute resources to download and process the whole thing, but I'm not claiming I was optimally efficient. 
+GPT2 is trained on the webtext corpus, which is basically all websites linked to from Reddit with at least 3 Karma. Since the database is huge and contains a lot of copyrighted material, I can't provide a download here. Instead, I'll describe how I got it. Be aware it cost me around ~500€ in cloud compute resources to download and process the whole thing, but I'm not claiming I was optimally efficient. 
 1. Use the download script from [here](https://github.com/jcpeterson/openwebtext) to download the archives (I used the prefiltered URLs file)
-2. Use *datasets/run_newspaper_extract.py* to extract the text
-3. Once you have the raw .txt files use *datasets/create_tfrecords.py* to encode them into .tfrecords files (Requires a copy of the encoder, see Downloading Pretrained Models)
+2. Use *datasets/openwebtext/
+run_newspaper_extract.py* to extract the text
+3. Once you have the raw .txt files use *datasets/openwebtext/
+create_tfrecords.py* to encode them into .tfrecords files (Requires a copy of the encoder, see Downloading Pretrained Models)
 4. Place the .tfrecords files into an accessible folder or Google Storage bucket (Placing in a Google Storage bucket is mandatory if you're using TPUs)
 5. Change the "data_path" parameter in your .json to point to where your .tfrecords files are located and, if necessary, adapt the functions in *inputs.py* to open the correct filenames, in case you changed them
 
+## Using Your Own Data
+You can also use your own text files as training data, but you'll need to modify some code by hand.
+1. Modify the parameters in *datasets/openwebtext/create_tfrecords.py*:
+
+```python
+base_dir = "/home/connor/my_text_dir" # Path to where your .txt files are located
+files_per = 175000 # How many txt files to put in one tfrecord, not too important
+name = "my-custom-data" # Name of output files will be name_i.tfrecords where i is the number of the file
+output_dir = "/home/connor/output" # Where to place the .tfrecords files
+log_dir = "logs" # Some logs will be placed here to support restarting if the encoding is interrupted
+files = glob.glob(os.path.join(base_dir, "**/*.txt")) # This needs to result in a list of paths to all of your txt files
+processes = 64 # Number of encoding processes to run
+encoder_path = "/home/connor/encoder" # Path to encoder files
+minimum_size = 128 # The minimum length (in BPE tokens) a file is allowed to have, otherwise it is discarded.
+```
+2. Run the script. This will result in a bunch of name_i.tfrecords files. Put these somewhere accessible (must be in a Google Storage bucket if you're using TPUs).
+3. Create a new input function in *inputs.py*. Any input function should have the signature *function_name(params, eval=False)*. The **stitch** value controls how many texts are concatenated so that you never end up with a sample that is too small. It should be: **ceil((n_ctx+1) / minimum_size)** So for example, if my minimum size is 128 and my n_ctx is 1024, stitch should be 9.
+
+```python
+def my_input(params, eval=False):
+    if not eval:
+        numbers = [0, 3, 4, 5, 6, 7, 8, 9] # A random subset of files for train
+    else:
+        numbers = [1, 2] # Random subset for eval
+    files = [os.path.join(params["data_path"], "my-custom-data_{}.tfrecords".format(str(i))) for i in numbers] # Generates the list of files
+
+    return bpe_text(params["batch_size"], files, amount=params["n_ctx"], iterations=params["iterations"], stitch=9, batch=True)
+```
+4. Register your new input in *main.py*.
+
+```python
+inputs = {
+    "openwebtext": openwebtext, # Standard OpenWebtext input
+    "openwebtext_longbiased": openwebtext_longbiased, # OpenWebtext with a bias towards showing more long (>512 tokens) examples
+    "openwebtext_long": openwebtext_long, # Openwebtext that only shows long examples
+    "my_input": my_input,
+}
+```
+5. Set your .json to use the new input.
+```python
+[...]
+    "iterations": 500,
+    "n_embd": 768,
+    "input": "my_input",
+    "model": "GPT2",
+[...]
+```
+6. You're done. The input described here should be as close to GPT2 as possible and run perfectly on TPUs.
 
 ## Explanation of Parameters
 Because passing two dozen parameters over the command line would be tedious, you pass all the model parameters in a .json file. Note that any paths also support Google Storage paths and *must* be gs:// paths if you're running on TPUs.
@@ -87,7 +137,8 @@ Model parameters:
 * **n_embd**: Dimension of embedding layers
 * **n_layer**: Number of layers in the model
 * **n_head**: Number of attention heads (default: n_embd / 64)
-* **scale**: Factor by which to scale initializations of weights (default: 1/sqrt(n_layer))
+* **scale_by_depth**: Whether or not to scale init by the number of layers (Default: true)
+* **scale_by_in**: Whether to scale init by the number of input channels (Default: true)
 
 Training parameters:
 * **precision**: Whether to use float32 or bfloat16 variables (use "bfloat16" when training very large models) (optional, defaults to float32)
